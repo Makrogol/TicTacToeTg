@@ -1,165 +1,160 @@
+import asyncio
 import os
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, ContextTypes, CommandHandler, CallbackQueryHandler
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from telegram.ext import Application, ContextTypes, CommandHandler, CallbackQueryHandler, InlineQueryHandler
 
-from bot import bot_messages, main_algo, draw
+from bot import bot_messages as bm, main_algo, bot_inline_methods as bim, bot_callback as bc, draw
 
 
 class Bot:
+
     def __init__(self):
         self.bot = Application.builder() \
             .token(os.getenv("BOT_TOKEN")) \
             .build()
-        self.bot.add_handler(CommandHandler(bot_messages.START_CMD, self.start))
-        self.bot.add_handler(CommandHandler(bot_messages.PLAY_CMD, self.play))
-        self.bot.add_handler(CommandHandler(bot_messages.HELP_CMD, self.help))
-        self.bot.add_handler(CommandHandler(bot_messages.END_CMD, self.end))
-        self.bot.add_handler(CallbackQueryHandler(self.turn_call_back))
+        self.bot.add_handler(CommandHandler(bm.START_CMD, self.start))
+        self.bot.add_handler(CommandHandler(bm.PLAY_CMD, self.play))
+        self.bot.add_handler(CommandHandler(bm.HELP_CMD, self.help))
+        self.bot.add_handler(CommandHandler(bm.END_CMD, self.end))
+        self.bot.add_handler(CallbackQueryHandler(self.call_back))
+        self.bot.add_handler(InlineQueryHandler(self.inline_pvp_game))
 
-    async def turn_call_back(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    @staticmethod
+    async def inline_pvp_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        field = [[0] * 3 for _ in range(3)]
+        # user1 - тот, который начал игру (вызвал бота) и он же будет первым ходить (за крестиков играть).
+        # user2 - тот, кого вызвали на игру, он будет ходить вторым (играть за ноликов)
+        user1 = update.effective_user.name
+        user2 = update.inline_query.query.split()[0]
+
+        await context.bot.answer_inline_query(update.inline_query.id,
+                                              bim.form_inline_query_result(field, user1, user2, 1))
+
+    async def call_back(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer()
-        await update.callback_query.edit_message_reply_markup()
+        data = update.callback_query.data.split()
 
-        if len(update.callback_query.data) == 1:
+        if data[0] == bm.PVP_INLINE_KB_CB:
+            # Обработка нажатий на инлайн клавиатуре во время pvp игры
+            await bc.pvp_inline_callback(data[1:], update)
+            return
+
+        if data[0] in list(bm.pc_lvl_cb.keys()):
             # Обработка нажатий на инлайн клавиатуру для выбора уровня бота
-            context.user_data["pc_lvl"] = int(update.callback_query.data)
-            await self.game(context.user_data["field_and_side"][1], update, context)
+            await bc.choose_pc_lvl_inline_kb_callback(self, data, update, context)
             return
 
-        if len(update.callback_query.data) == 2:
+        if data[0] in list(bm.user_side_cb.keys()):
             # Обработка нажатий на инлайн клавиатуру для выбора стороны пользователя
-            field = [[0] * 3 for _ in range(3)]
-            # 1 - крестики, 2 - нолики
-            if update.callback_query.data == 'XX':
-                user_side = 1
-            elif update.callback_query.data == 'OO':
-                user_side = 2
-            else:
-                await context.bot.send_message(update.effective_chat.id, text=bot_messages.ERROR_MSG)
-            context.user_data["field_and_side"] = [field, user_side]
-            await self.choose_pc_lvl(update, context)
+            await bc.user_side_inline_kb_callback(data, update, context)
             return
 
-        if len(update.callback_query.data) == 5:
+        if data[0] == bm.SOLO_INLINE_KB_CB:
             # Обработка нажатий на инлайн клавиатуру для хода пользователя
-            data = [int(i) for i in update.callback_query.data.split()]
-            if data[2] != context.user_data["field_and_side"][1]:
-                # Если пользователь нажал на кнопку, на которой не было текста (просто пустая, она нужна для структуры)
-                await context.bot.send_message(update.effective_chat.id, text=bot_messages.WRONG_BUTTON_PRESSED_MSG)
-                await self.game(1, update, context)
-            else:
-                field = context.user_data["field_and_side"][0]
-                main_algo.fill_field(field, data[0], data[1], context.user_data["field_and_side"][1])
-                # await context.bot.send_message(update.effective_chat.id,
-                #                                text=bot_messages.user_turn_msg(field, data[0], data[1]))
-                context.user_data["field_and_side"][0] = field
-                current_state = main_algo.is_win(field)
-                # Проверка поля на "закончилась игра или нет"
-                if current_state == 0:
-                    # Если не закончилась, то вызываем ход компьютера
-                    await self.game(2, update, context)
-                else:
-                    # Если закончилась, сообщаем об этом
-                    await self.end_game_send_message(current_state, update, context)
+            await bc.user_turn_inline_kb_callback(self, data[1:], update, context)
+            return
+
         else:
-            await context.bot.send_message(update.effective_chat.id, text=bot_messages.ERROR_MSG)
+            # Дефолт на случай чего-то непредвиденного (убирается инлайн клавиатура и выводится сообщение об ошибке)
+            await update.callback_query.edit_message_reply_markup()
+            await context.bot.send_message(update.effective_chat.id, text=bm.ERROR_MSG)
+            return
 
     @staticmethod
     async def end_game_send_message(current_state: int, update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Если игра закончилась, то выводим соответствующее сообщение
-        field = context.user_data["field_and_side"][0]
-        draw.paint_field(field)
+        # Отрисовываем конечное поле картинкой, для хроников
+        draw.paint_field(context.user_data[bm.field_and_side_user_data_key][0], current_state)
+        pc_lvl = context.user_data[bm.pc_lvl_user_data_key]
+        user_side = bm.turn[context.user_data[bm.field_and_side_user_data_key][1]]
         await context.bot.send_photo(chat_id=update.effective_chat.id,
-                                     caption=bot_messages.game_state_msg(field, current_state,
-                                                                         context.user_data["field_and_side"][
-                                                                             1]), photo='field.jpg')
+                                     caption=bm.solo_end_game_msg(current_state, user_side, pc_lvl),
+                                     photo='field.jpg')
         os.remove(path="field.jpg")
-        context.user_data.pop("field_and_side")
+        context.user_data.pop(bm.field_and_side_user_data_key)
 
     @staticmethod
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=bot_messages.START_MSG)
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=bm.START_MSG)
 
     @staticmethod
     async def help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=bot_messages.HELP_MSG)
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=bm.HELP_MSG)
 
     @staticmethod
     async def end(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if context.user_data.get("field_and_side"):
-            context.user_data.pop("field_and_side")
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=bot_messages.END_GAME_MSG)
+        if context.user_data.get(bm.field_and_side_user_data_key):
+            # Если игра была начата, то заканчиваем ее
+            context.user_data.pop(bm.field_and_side_user_data_key)
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=bm.END_GAME_MSG)
         else:
+            # Если игра еще не была начата
             await context.bot.send_message(chat_id=update.effective_chat.id,
-                                           text=bot_messages.GAME_IS_NOT_YET_START_MSG)
+                                           text=bm.GAME_IS_NOT_YET_START_MSG)
 
     @staticmethod
     async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if context.user_data.get("field_and_side"):
+        if context.user_data.get(bm.field_and_side_user_data_key):
             # Если игра уже была начата, то сообщаем об этом
-            await context.bot.send_message(update.effective_chat.id, text=bot_messages.GAME_IS_ALREADY_EXIST_MSG)
+            await context.bot.send_message(update.effective_chat.id, text=bm.GAME_IS_ALREADY_EXIST_MSG)
             return
 
         # Иначе начинаем новую игру и даем пользователю выбрать сторону
         inline_kb_user_play_side = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(text='X', callback_data='XX'),
-              InlineKeyboardButton(text='O', callback_data='OO')]])
-        await context.bot.send_message(update.effective_chat.id, text=bot_messages.PLAY_MSG,
+            [[
+                InlineKeyboardButton(text=bm.USER_SIDE_X_BUTTON_TEXT, callback_data=bm.USER_SIDE_X_CB),
+                InlineKeyboardButton(text=bm.USER_SIDE_O_BUTTON_TEXT, callback_data=bm.USER_SIDE_O_CB)
+            ]]
+        )
+        await context.bot.send_message(update.effective_chat.id, text=bm.PLAY_MSG,
                                        reply_markup=inline_kb_user_play_side)
 
     @staticmethod
     async def choose_pc_lvl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Даем пользователю выбрать уровень бота
         inline_kb_choose_pc_lvl = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(text='3', callback_data='3'),
-              InlineKeyboardButton(text='2', callback_data='2'),
-              InlineKeyboardButton(text='1', callback_data='1')]])
-        await context.bot.send_message(update.effective_chat.id, text=bot_messages.CHOOSE_PC_LVL_MSG,
+            [[
+                InlineKeyboardButton(text=bm.PC_LVL_EASY_BUTTON_TEXT, callback_data=bm.PC_LVL_EASY_CB),
+                InlineKeyboardButton(text=bm.PC_LVL_MEDIUM_BUTTON_TEXT, callback_data=bm.PC_LVL_MEDIUM_CB),
+                InlineKeyboardButton(text=bm.PC_LVL_HARD_BUTTON_TEXT, callback_data=bm.PC_LVL_HARD_CB)
+            ]]
+        )
+
+        await context.bot.send_message(update.effective_chat.id, text=bm.CHOOSE_PC_LVL_MSG,
                                        reply_markup=inline_kb_choose_pc_lvl)
 
-    async def game(self, turn: int, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        dict = {1: "user_turn", 2: "pc_turn"}
-        if dict[turn] == "user_turn":
-            # Если ход пользователя, то выводим поле и даем ему сделать ход
-            field = context.user_data["field_and_side"][0]
-            user_side = context.user_data["field_and_side"][1]
-            sides = {0: ' ', 1: 'X', 2: 'O'}
-            # inline_kb = [[InlineKeyboardButton(text=sides[user_side * int(field[i][j] == 0)],
-            #                                    callback_data=[i * 3 + j, user_side * int(field[i][j] == 0)]) for j in
-            #               field[i]] for i in range(3)]
-
-            inline_kb = [[], [], []]
-            for i in range(3):
-                for j in range(3):
-                    inline_kb[i].append(InlineKeyboardButton(text=sides[user_side * int(field[i][j] == 0)],
-                                                             callback_data=f'{i} {j} '
-                                                                           f'{user_side * int(field[i][j] == 0)}'))
-            draw.paint_field(field)
-            await context.bot.send_photo(chat_id=update.effective_chat.id,
-                                         caption=bot_messages.before_user_turn_msg(field),
-                                         reply_markup=InlineKeyboardMarkup(inline_kb), photo="field.jpg")
-            os.remove(path="field.jpg")
-        elif dict[turn] == "pc_turn":
-            # Если ход компьютера, то компьютер делает ход
+    async def first_turn(self, turn: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Если ход компьютера, то компьютер делает ход
+        if turn == bm.PC_TURN_KEY:
             await self.pc_turn(update, context)
-        else:
-            await context.bot.send_message(update.effective_chat.id, text=bot_messages.ERROR_MSG)
+
+        # Отрисовываем поле и даем пользователю сделать ход (если компьютер уже сделал ход,
+        # то отрисовываем поле, учитывая этот ход. Иначе отрисовываем пустое поле)
+        field = context.user_data[bm.field_and_side_user_data_key][0]
+        pc_lvl = context.user_data[bm.pc_lvl_user_data_key]
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                       text=bm.turn_msg(pc_lvl),
+                                       reply_markup=bim.form_inline_solo_game_kb(field))
 
     async def pc_turn(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        field = context.user_data["field_and_side"][0]
-        # Вызываем ход компьютера от 3 - context.user_data... потому что компьютер играет за противоположную
+        field = context.user_data[bm.field_and_side_user_data_key][0]
+        pc_lvl = context.user_data[bm.pc_lvl_user_data_key]
+        user_side = bm.turn[context.user_data[bm.field_and_side_user_data_key][1]]
+        pc_side = 3 - user_side
+        # Вызываем ход компьютера от 3 - user_side потому что компьютер играет за противоположную
         # относительно пользователя сторону (либо 1, либо 2. поскольку в сумме они дают 3,
         # то сделав 3 - "сторона пользователя" получим сторону компьютера)
-        main_algo.pc_turn(field, 3 - context.user_data["field_and_side"][1], context.user_data["pc_lvl"])
-        # await context.bot.send_message(chat_id=update.effective_chat.id,
-        #                                text=bot_messages.pc_turn_msg(field,
-        #                                                              pc_turn_x, pc_turn_y))
-        context.user_data["field_and_side"][0] = field
+
+        main_algo.pc_turn(field, pc_side, pc_lvl)
+        context.user_data[bm.field_and_side_user_data_key][0] = field
         current_state = main_algo.is_win(field)
 
         # Проверяем игру на конец
         if current_state != 0:
             await self.end_game_send_message(current_state, update, context)
-        else:
-            await self.game(1, update, context)
+
+    @staticmethod
+    async def delete_wrong_button_press_message(message: Message, delay: int):
+        await asyncio.sleep(delay)
+        await message.delete()

@@ -1,5 +1,5 @@
 import functools
-
+from bot import bot_messages as bm
 
 class turn:
     def __init__(self):
@@ -28,17 +28,46 @@ def is_win(field) -> int:
     return -1
 
 
+def type_win(field):
+    # horizontal line
+    for i in range(3):
+        if field[i][0] == field[i][1] and field[i][1] == field[i][2]:
+            return bm.type_win_horizontal_line, i
+
+    # vertical line
+    for i in range(3):
+        if field[0][i] == field[1][i] and field[1][i] == field[2][i]:
+            return bm.type_win_vertical_line, i
+
+    # main diag
+    if field[0][0] == field[1][1] and field[1][1] == field[2][2]:
+        return bm.type_win_main_diag, 0
+
+    # side diag
+    if field[2][0] == field[1][1] and field[1][1] == field[0][2]:
+        return bm.type_win_side_diag, 0
+
+
 def fill_field(field, x, y, type: int):
     field[x][y] = type
+
+
+def count_blank_points_in_field(field):
+    count = 0
+    for i in range(3):
+        for j in range(3):
+            count += int(field[i][j] == 0)
+
+    return count
 
 
 def analyze(field, results, type: int):
     wins = is_win(field)
     if wins == -1:
-        results[0] += 1
+        results[0] += 1 * 2 ** count_blank_points_in_field(field)
         return
     elif wins == 1 or wins == 2:
-        results[wins] += 1
+        results[wins] += 1 * 2 ** count_blank_points_in_field(field)
         return
     for i in range(3):
         for j in range(3):
@@ -58,14 +87,21 @@ def fill_result(results, i, res, x, y, type):
     results[i].win = int(res[type] / sum * 10 ** 4)
 
 
+def out_turn(t: turn):
+    print(f'defeat = {t.defeat}')
+    print(f'draw = {t.draw}')
+    print(f'win = {t.win}')
+    print('\n')
+
+
 def find_best_turn(arr, size, pc_lvl) -> turn:
-    # min_def = turn()
-    # min_def.defeat = 10 ** 4
     copy_arr = []
     for i in range(size):
         is_item = False
         for j in range(len(copy_arr)):
-            if arr[i].draw == copy_arr[j].draw and arr[i].win == copy_arr[j].win and arr[i].defeat == copy_arr[j].defeat:
+            if arr[i].draw == copy_arr[j].draw and \
+               arr[i].win == copy_arr[j].win and \
+               arr[i].defeat == copy_arr[j].defeat:
                 is_item = True
                 break
         if not is_item:
@@ -83,15 +119,13 @@ def find_best_turn(arr, size, pc_lvl) -> turn:
             return 0
 
     copy_arr.sort(key=functools.cmp_to_key(compare))
+
     if len(copy_arr) >= pc_lvl:
         return copy_arr[pc_lvl - 1]
+    elif pc_lvl == 1:
+        return copy_arr[0]
     else:
         return copy_arr[len(copy_arr) - 1]
-
-    # for i in range(size):
-    #     if arr[i].defeat < min_def.defeat or arr[i].defeat == min_def.defeat and arr[i].win > min_def.win:
-    #         min_def = arr[i]
-    # return min_def
 
 
 def pc_turn(field, type: int, pc_lvl) -> (int, int):
